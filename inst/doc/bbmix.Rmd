@@ -1,0 +1,232 @@
+---
+title: "BBmix: genotyping using RNA-seq"
+author: "Elena Vigorito and Chris Wallace"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{BBmix installation and usage}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+The goal of bbmix is to genotype variants using RNA-seq reads. We developed a 2-step
+approach. First, we selected RNA-seq reads that overlap known exonic bi-allelic SNPs to learn
+the parameters for a mixture of three Beta-Binomial distributions underlying the three possible
+genotypes. In the second step we obtained posterior probabilities for each of the genotypes using
+the parameters learnt in step 1
+
+### Install  bbmix from [GitLab](https://about.gitlab.com/):
+
+Installation has been tested on R 3.5.1. Installation time is estimated as 2 minutes.
+
+``` r
+## Within R:
+install.packages("devtools") # if you don't already have the package
+library(devtools)
+devtools::install_git(url = "https://gitlab.com/evigorito/bbmix.git")
+
+```
+
+## Running bbmix
+
+Preparation of the required input files are described in [bbmix_pipeline](https://gitlab.com/evigorito/bbmix_pipeline).
+
+We have shown that training the model with the same sample that we want to learn genotypes, with a pool of reads from all the study samples or with an external sample did not affect much the accuracy of genotype calls. Here we provide examples on how to call genotypes in this 3 scenarios. The example uses a random subset of SNPs within chromosome 22.
+
+
+### Calling genotypes with the model trained with external default sample (NA12878)
+
+The function to call is **call_gt**. We provide an example for calling genotypes on chromosome 22 for the genome in a bottle NA12878 sample. Genome coordinates are in built 37.
+
+
+**Arguments**
+
+*allele_counts_f*: file name with allele counts for SNPs (details on how to generate this file are in the pipeline.)
+
+*depth* : minumun number of reads overlapping a SNP for genotypes to be called, defaults to 10
+
+*stan_f* : full name to stan object with model fit to extract mean of parameters. Defaults to NULL, using the model trained with genome in a bottle reads. Otherwise this object can be generated with fit_bb function. 
+
+*legend_f* : name for legend file with allele frequencies to apply for prior. Requited columns are "position a0 a1" and the name for the column to extract allele frequencies. The file need to be compressed and compatible with gunzip.
+
+*pop* : column name from legend_f for the population to extract allele frequencies, defaults to EUR
+
+*prob* : threshold for the posterior probability to make hard calls, defaults to 0.99
+
+*fisher_f* : file with SNP annotations with Fisher exact test for detecting strand bias
+
+*fisher* : cut-off for Fisher strand bias, defaults to 30
+
+*cluster_f* : file with SNP annotation of whether there are in clusters of at least 3 within 35bp
+
+*out* : file name to save output
+
+
+
+```{r call_gt}
+## Retrive input files for running call_gt
+counts_f <- system.file("extdata/input", "NA12878.chr22.Q20.allelicCounts.txt",
+		package = "bbmix",
+		mustWork = TRUE)
+
+legend <- system.file("extdata/input", "1000GP_Phase3_chr22.legend",
+       package = "bbmix", mustWork = TRUE)
+
+fisher_f <- system.file("extdata/input", "chr22.FS.Q20.alleleCounts.txt",
+	 package = "bbmix", mustWork = TRUE)
+
+cluster_f <- system.file("extdata/input", "fSNPs_22_RP_maf0_01_cluster3window35.txt",
+	  package = "bbmix", mustWork = TRUE)
+
+library(bbmix)
+
+## Choose your output file:
+
+out <- paste0(tempdir() , "/NA12878.chrom22.gt.txt")
+
+## Run call_gt:
+call_gt(allele_counts_f = counts_f,
+	legend_f = legend,
+	fisher_f = fisher_f,
+	cluster_f = cluster_f,
+	out = out)
+unlink(out)
+```
+
+### Calling genotypes with the model trained with a sample of choice
+
+1-  We first call the function **fit_bb** and then **call_gt** as follows:
+
+**Arguments for fit_bb**
+
+*counts_f*: file name with allele counts for SNPs (details on how to generate this file are in the pipeline, same format as for allele_counts_f in call_gt function.)
+
+*N* : Number of SNPs to train the model, defaults to 1000
+
+*prefix* : prefix to add to files when saving (suffix: _stan_beta_binom_fit.rds), suggested prefix is sample name, defaults to NULL (stan_beta_binom_fit.rds)
+
+*alpha_p* : Beta prior parameter for model training, default [1,10,499]
+
+*beta_p* : Beta prior parameter for model training, default [499, 10, 1]
+
+*out* : directory to save output from model fitting
+
+```{r get_files}
+## Retrive input files for running call_gt
+counts_f <- system.file("extdata/input", "NA12878.chr22.Q20.allelicCounts.txt",
+		package = "bbmix",
+		mustWork = TRUE)
+
+```
+``` {r fit_bb, eval=F}
+## Choose your output directory, in this examle we use a temporary directory, also we use N=10 for the model to run quickly but this should be 1000 for model convergence (function default)
+
+out <- "path/to/output_dir"
+out <- tempdir()
+
+## Run fit_bb:
+fit_bb(counts_f = counts_f,
+	N=10,
+	out = out, mc.cores=1)
+unlink(out)
+```
+
+2- Call genotypes using **call_gt**
+
+We use the same arguments as above except that now we use the argument "stan_f" with the output file generated by the function fit_bb:
+
+
+```{r, eval=F}
+## Run call_gt:
+call_gt(allele_counts_f = counts_f,
+	stan_f = output_from_fit_bb,
+	legend_f = legend,
+	fisher_f = fisher_f,
+	cluster_f = cluster_f,
+	out = out)
+```
+
+
+### Calling genotypes with a pool of samples
+
+The function **poolreads** can be use for preparing the input file
+'counts_fit' for **bbmix**.
+**poolreads** takes the following arguments:
+	      * files: vector with the name of the files to pool the reads from
+	      * N : number of SNPs to select for each sample, defaults to 1000
+	      * d : read depth for a SNP to be included in the pool, defaults to 10
+	      * out : name to write output file
+
+Then call **fit_bb** for model fitting as in previous example using the output file from
+**poolreads** as input for 'counts_f' argument. Last, call **cal_gt** with stan_f argument generated by fit_bb.
+
+```{r poolreads}
+## Run poolreads:
+
+counts_f <- system.file("extdata/input", "NA12878.chr22.Q20.allelicCounts.txt",
+		package = "bbmix",
+		mustWork = TRUE)
+
+## In this example we only use one file
+out <- tempfile()
+
+poolreads(files=counts_f,
+	N=10,
+	d=10,
+	out = out)
+	
+unlink(out)
+```
+
+### Calling genotypes output
+```{r inspect_genotype_calls}
+## Inspecting output files
+gt <- data.table::fread(system.file("extdata/output", "gt.NA12878.chr22.txt",
+      						      package = "bbmix",
+						      mustWork = TRUE))
+
+head(gt)
+
+```
+
+The table list the chromosome (CHROM), position (POS), reference (REF)
+and alternative alleles (ALT), the number of reads overlapping the
+reference allele (NREF), the alternative allele (NALT) and total. The
+next column is the effector allele frequency for the selected
+ethnicity, followed by the posterior probabilities for genotypes
+homozygous reference (p0), heterozygous (p1) or hom alternative
+(p2). Then, the expected genotype (expected_GT, dosage), its the
+standard deviation (expected_sd) and hard calls based on parameter
+"prob" follows in column GT. Last, the quality control measures for
+SNP in clusters or Fisher strand bias phred scaled p-value are
+labelled as SNPclusters and FS.
+
+### Quality control for  genotypes
+
+The function ex_alt_hom allows you to exclude fSNPs if the genotype in
+all samples is homozygous. The input is the output from call_gt.
+
+```{r qc_genotype}
+
+library(bbmix)
+## Extracting genotype file 
+gt_f <- system.file("extdata/output", "gt.NA12878.chr22.txt",
+      						      package = "bbmix",
+						      mustWork = TRUE)	
+out <- tempfile()
+
+## Running function
+ex_alt_hom(gt_f, out)
+
+unlink(out)
+```
+
+
+
